@@ -1,0 +1,69 @@
+# =========================
+# Dependencies
+# =========================
+node_modules/
+/.pnp
+.pnp.js
+
+# =========================
+# Environment Variables (CRITICAL)
+# =========================
+# NEVER commit your MongoDB URI or API keys to GitHub!
+.env
+.env.local
+.env.development.local
+.env.test.local
+.env.production.local
+
+# =========================
+# Production Builds (Vite/React)
+# =========================
+dist/
+dist-ssr/
+build/
+
+# =========================
+# Logs
+# =========================
+logs
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+
+# =========================
+# Editor & IDE Files
+# =========================
+.vscode/
+.idea/
+*.suo
+*.ntvs*
+*.njsproj
+*.sln
+*.sw?
+
+# =========================
+# OS Generated Files
+# =========================
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+
+# =========================
+# Misc / Caching
+# =========================
+.eslintcache
+.vite/
+coverage/
+
+# TypeScript
+*.tsbuildinfo
+
+# MediaPipe Models
+public/models/*.tflite
+public/models/*.wasm
