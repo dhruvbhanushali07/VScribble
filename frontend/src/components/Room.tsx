@@ -1,57 +1,59 @@
-import React, { useContext, useEffect, useState } from "react";
+import { useContext, useEffect, useState } from "react";
+import Canvas from "./Canvas";
+import Chat from "./Chat";
 import { SocketContext } from "../context/SocketContext";
-import { useParams } from "react-router";
+import { useLocation } from "react-router";
 
-interface ChatMessage{
-    id: string | undefined;
-    mssg: string ;
+interface Player {
+	id: string;
+	username: string;
 }
 
-
 export default function Room() {
+	const socket = useContext(SocketContext);
+	const location = useLocation();
+	const [allPlayer, setAllPlayers] = useState<Player[]>(
+		location.state?.playerArr || [],
+	);
+	console.log(allPlayer);
 
-    const {roomId}=useParams() as {roomId:string}
-    const socket= useContext(SocketContext)
-    const [chat,setChat]= useState<string[]>([])
-    const [message, setMessage]= useState<ChatMessage>({id:socket?.id,mssg:""})
+	useEffect(() => {
+		if (!socket) return;
 
+		const handlePlayerJoined = (payload: any) => {
+			console.log("Someone else joined", payload);
+			setAllPlayers(payload.playerArr);
+		};
 
-    function sendMessage(e:React.FormEvent){
-        e.preventDefault()
-        socket?.emit("chat_message",{roomId,message})
-    }
+		socket.on("player_joined", handlePlayerJoined);
 
-    useEffect(()=>{
+		// 3. Clean up using the exact same named functions
+		return () => {
+			socket.off("player_joined", handlePlayerJoined);
+		};
+	}, [socket]);
 
-        socket?.on("receive_message",(payload)=>{
-            setChat((prev)=>[...prev,payload.message])
-        })
-
-        return()=>{
-            socket?.off("receive_message")
-        }
-    })
-    
-    console.log(chat)
 	return (
-		<div className="flex w-full h-full justify-center content-center flex-wrap">
-            <div>
-                {
-                    chat.map((item,index)=>{
-                        return(
-                            <div key={index}>
-                                <p>{item}</p>
-                            </div>
-                        )
+		<div className="flex w-full p-4 h-full justify-center content-center flex-wrap">
+			<div className="w-1/5 border-2">
+				<Chat />
+			</div>
+
+			<div id="canvas" className="w-4/5 h-4/5 overflow-hidden">
+				<Canvas />
+			</div>
+
+			<div className="w-full mt-4">
+				<h2 className="font-bold">Players:</h2>
+
+				{allPlayer.length === 0 ? (
+					<p>No players yet</p>
+				) : (
+					allPlayer.map((player, index) => {
+                        return<p key={index}>{player.username}</p>
                     })
-                }
-            </div>
-            <div>
-                <form onSubmit={sendMessage}>
-                    <input type="text" onChange={(e)=>{setMessage({id:socket?.id,mssg:e.currentTarget.value})}} value={message?.mssg} />
-                    <button type="submit">Send</button>
-                </form>
-            </div>
-        </div>
+				)}
+			</div>
+		</div>
 	);
 }
