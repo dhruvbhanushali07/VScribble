@@ -4,11 +4,20 @@ import { Server } from "socket.io";
 
 const app = express();
 const httpserver = http.createServer(app);
-const FRONTEND_URL = process.env.FRONTEND_URL || "http://localhost:5173";
+
+// Grab the env variable, but also provide your exact Vercel URL as a fallback
+const FRONTEND_URL = process.env.FRONTEND_URL || "https://v-scribble.vercel.app";
 
 const io = new Server(httpserver, {
     cors: {
-        origin: [FRONTEND_URL, "http://localhost:5173"], // Allows both prod and local
+        // We put all valid URLs in an array so it accepts local testing AND production
+        origin: [
+            FRONTEND_URL, 
+            "https://v-scribble.vercel.app", 
+            "http://localhost:5173"
+        ],
+        methods: ["GET", "POST"],
+        credentials: true
     },
 });
 
