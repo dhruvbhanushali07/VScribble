@@ -21,27 +21,78 @@ const WORD_LIST = [
 	"CASTLE",
 	"BICYCLE",
 	"OCEAN",
-	// Add more words!
 ];
 
 const rooms = {};
 
+// --- HELPER: Levenshtein Distance ---
+function getLevenshteinDistance(a, b) {
+	const matrix = Array.from({ length: a.length + 1 }, () =>
+		Array(b.length + 1).fill(0),
+	);
+	for (let i = 0; i <= a.length; i++) matrix[i][0] = i;
+	for (let j = 0; j <= b.length; j++) matrix[0][j] = j;
+
+	for (let i = 1; i <= a.length; i++) {
+		for (let j = 1; j <= b.length; j++) {
+			const cost = a[i - 1] === b[j - 1] ? 0 : 1;
+			matrix[i][j] = Math.min(
+				matrix[i - 1][j] + 1, // deletion
+				matrix[i][j - 1] + 1, // insertion
+				matrix[i - 1][j - 1] + cost, // substitution
+			);
+		}
+	}
+	return matrix[a.length][b.length];
+}
+
+// --- HELPER: Smart Hint Generator ---
+function generateSmartHint(turn) {
+	const word = turn.word;
+	const indices = [];
+
+	// Find indices that are still blank
+	for (let i = 0; i < word.length; i++) {
+		if (turn.hintString[i] === "_") indices.push(i);
+	}
+
+	// Never reveal the whole word
+	if (indices.length <= 1) return;
+
+	let revealIndex;
+
+	if (turn.hintsGiven === 0) {
+		// Smart Hint 1: Always reveal the first letter
+		revealIndex = 0;
+	} else if (turn.hintsGiven === 1) {
+		// Smart Hint 2: Try to reveal a vowel
+		const vowels = ["A", "E", "I", "O", "U"];
+		const vowelIndices = indices.filter((i) => vowels.includes(word[i]));
+		if (vowelIndices.length > 0) {
+			revealIndex =
+				vowelIndices[Math.floor(Math.random() * vowelIndices.length)];
+		} else {
+			revealIndex = indices[Math.floor(Math.random() * indices.length)];
+		}
+	} else {
+		// Future Hints: Random unrevealed letter
+		revealIndex = indices[Math.floor(Math.random() * indices.length)];
+	}
+
+	turn.hintString[revealIndex] = word[revealIndex];
+	turn.hintsGiven++;
+}
+
 io.on("connection", (socket) => {
 	console.log("New socket connected: ", socket.id);
 
-	// ==========================================
-	// 1. ROOM CREATION & JOINING
-	// ==========================================
 	socket.on("req_create_room", (username) => {
 		let roomId;
 		do {
 			roomId = Math.random().toString(36).substring(2, 6).toUpperCase();
 		} while (rooms[roomId]);
 
-		const roomOwner = {
-			id: socket.id,
-			username: username,
-		};
+		const roomOwner = { id: socket.id, username: username };
 
 		rooms[roomId] = {
 			players: [roomOwner],
@@ -50,8 +101,6 @@ io.on("connection", (socket) => {
 			usedWords: [],
 			scores: {},
 			timerInterval: null,
-
-			// --- NEW: Configurable Settings ---
 			settings: {
 				maxPlayers: 8,
 				drawTime: 90,
@@ -59,13 +108,16 @@ io.on("connection", (socket) => {
 				wordCount: 3,
 				hints: 2,
 			},
-
-			// --- NEW: Nested Turn State ---
+			// Add this inside BOTH req_create_room AND startTurn where currentTurn is defined:
 			currentTurn: {
 				drawerId: null,
 				word: "",
-				correctGuessers: [], // Array of socket IDs who guessed correctly
+				correctGuessers: [],
 				timeLeft: 0,
+				hintString: [],
+				hintTimes: [],
+				hintsGiven: 0,
+				canvasHistory: [], 
 			},
 		};
 
@@ -77,55 +129,55 @@ io.on("connection", (socket) => {
 	});
 
 	socket.on("join_room", (roomId, username) => {
-		const room = rooms[roomId];
-		if (!room)
-			return socket.emit("room_error", "This room does not exist.");
-		if (room.players.length >= room.settings.maxPlayers)
-			return socket.emit("room_error", "This room is full.");
-		if (room.status !== "LOBBY")
-			return socket.emit("room_error", "Game is already in progress.");
+        const room = rooms[roomId];
+        if (!room) return socket.emit("room_error", "This room does not exist.");
+        if (room.players.length >= room.settings.maxPlayers) return socket.emit("room_error", "This room is full.");
+        
+        // WE REMOVED THE "LOBBY ONLY" CHECK HERE SO LATE JOINERS CAN ENTER!
 
-		let player = { id: socket.id, username: username };
-		room.players.push(player);
-		socket.join(roomId);
+        let player = { id: socket.id, username: username };
+        room.players.push(player);
+        socket.join(roomId);
 
-		socket.emit("join_success", { roomId, playerArr: room.players });
-		socket.to(roomId).emit("player_joined", { playerArr: room.players });
+        socket.emit("join_success", { roomId, playerArr: room.players });
+        socket.to(roomId).emit("player_joined", { playerArr: room.players });
 
-		io.to(roomId).emit("receive_message", {
-			username: "System",
-			text: `${username} has joined the room.`,
-			isSystemMsg: true,
-		});
-	});
+        io.to(roomId).emit("receive_message", {
+            username: "System", text: `${username} has joined the room.`, isSystemMsg: true,
+        });
 
-	// ==========================================
-	// 2. HOST SETTINGS & SECURITY
-	// ==========================================
+        // --- NEW: LATE JOINER SYNC ---
+        // If they joined mid-round, bring their game state up to speed!
+        if (room.status === "DRAWING") {
+            // 1. Tell them the game is active, who is drawing, and give them the current hints
+            socket.emit("game_started", {
+                drawerId: room.currentTurn.drawerId,
+                wordLength: room.currentTurn.word.length,
+                initialHint: room.currentTurn.hintString
+            });
+            // 2. Send them all the lines drawn so far
+            socket.emit("canvas_history", room.currentTurn.canvasHistory);
+        }
+    });
+
 	socket.on("update_settings", (payload) => {
 		const room = rooms[payload.roomId];
-		if (!room) return;
+		if (!room || room.players[0].id !== socket.id) return;
 
-		// SECURITY PATCH: Only the host (player[0]) can change settings
-		if (room.players[0].id !== socket.id) return;
-
-		// Update settings with validation
-		room.settings.maxPlayers = payload.maxPlayers || 8;
-		room.settings.drawTime = payload.drawTime || 90;
-		room.settings.maxRounds = Math.max(2, payload.maxRounds || 3); // Min 2 rounds
-		room.settings.wordCount = payload.wordCount || 3;
-		room.settings.hints = payload.hints || 2;
-
+		room.settings = { ...room.settings, ...payload };
 		socket.to(payload.roomId).emit("settings_updated", room.settings);
 	});
 
 	socket.on("start_game", (roomId) => {
 		const room = rooms[roomId];
-		if (!room || room.players.length < 2 || room.status !== "LOBBY") return;
+		if (
+			!room ||
+			room.players.length < 2 ||
+			room.status !== "LOBBY" ||
+			room.players[0].id !== socket.id
+		)
+			return;
 
-		if (room.players[0].id !== socket.id) return;
-
-		// TOTAL WIPE: Clear the object entirely before setting new scores
 		room.scores = {};
 		room.players.forEach((p) => (room.scores[p.id] = 0));
 		room.round = 1;
@@ -134,27 +186,31 @@ io.on("connection", (socket) => {
 		startRound(roomId);
 	});
 
-	// ==========================================
-	// 3. CANVAS SYNCING (WITH SECURITY)
-	// ==========================================
 	socket.on("draw_event", (payload) => {
-		const room = rooms[payload.roomId];
-		if (!room) return;
+        const room = rooms[payload.roomId];
+        if (!room) return;
 
-		// SECURITY PATCH: Reject drawing if it's not this socket's turn
-		if (room.currentTurn.drawerId !== socket.id) return;
+        // SECURITY PATCH: Reject drawing if it's not this socket's turn
+        if (room.currentTurn.drawerId !== socket.id) return;
 
-		socket.to(payload.roomId).emit("draw_event", payload);
-	});
+        // Save the stroke to history!
+        room.currentTurn.canvasHistory.push(payload);
 
-	socket.on("clear_canvas", (roomId) => {
-		const room = rooms[roomId];
-		if (!room || room.currentTurn.drawerId !== socket.id) return;
-		socket.to(roomId).emit("clear_canvas");
-	});
+        socket.to(payload.roomId).emit("draw_event", payload);
+    });
+
+    socket.on("clear_canvas", (roomId) => {
+        const room = rooms[roomId];
+        if (!room || room.currentTurn.drawerId !== socket.id) return;
+        
+        // Wipe the history!
+        room.currentTurn.canvasHistory = [];
+        
+        socket.to(roomId).emit("clear_canvas");
+    });
 
 	// ==========================================
-	// 4. CHAT & SCORING SYSTEM
+	// CHAT & GUESS SYSTEM (Updated with Close Guesses)
 	// ==========================================
 	socket.on("chat_message", (payload) => {
 		const room = rooms[payload.roomId];
@@ -165,34 +221,26 @@ io.on("connection", (socket) => {
 		const guessedWord = payload.text.trim().toUpperCase();
 		const turn = room.currentTurn;
 
-		// If game is active, checking guesses
 		if (room.status === "DRAWING" && turn.word) {
-			// If they are the drawer, or already guessed correctly, block them from typing the answer
+			// Block drawer or already correct guessers from answering
 			if (
 				socket.id === turn.drawerId ||
 				turn.correctGuessers.includes(socket.id)
 			) {
-				if (guessedWord === turn.word) return; // Ignore message
+				if (guessedWord === turn.word) return;
 			}
 
-			// Check for correct guess
+			// Correct Guess Logic
 			if (guessedWord === turn.word) {
 				turn.correctGuessers.push(socket.id);
 
-				// Track the time of the VERY FIRST correct guess for drawer bonus
-				if (turn.correctGuessers.length === 1) {
+				if (turn.correctGuessers.length === 1)
 					turn.firstGuessTimeLeft = turn.timeLeft;
-				}
 
-				// -- SCORING MATH (RANK-BASED: OPTION B) --
 				const rank = turn.correctGuessers.length;
-
-				// 1st = 100, 2nd = 80, 3rd = 60... drops by 20 each time, minimum of 10 points.
 				let points = Math.max(10, 100 - (rank - 1) * 20);
 
-				// SAVE DELTA (Points earned THIS turn)
 				turn.turnScores[socket.id] = points;
-				// ADD TO TOTAL
 				room.scores[socket.id] += points;
 
 				io.to(payload.roomId).emit("receive_message", {
@@ -201,15 +249,30 @@ io.on("connection", (socket) => {
 					isCorrectGuess: true,
 				});
 
-				// Check if everyone has guessed
 				if (turn.correctGuessers.length === room.players.length - 1) {
 					endTurn(payload.roomId, "Everyone guessed it!");
 				}
 				return;
 			}
+
+			// Close Guess Logic (Levenshtein)
+			const dist = getLevenshteinDistance(guessedWord, turn.word);
+			// Allow 1 typo for short words (<=5), 2 typos for long words
+			const isClose =
+				(turn.word.length <= 5 && dist === 1) ||
+				(turn.word.length > 5 && dist <= 2);
+
+			if (isClose) {
+				// Whisper to the user ONLY. Do not broadcast.
+				io.to(socket.id).emit("receive_message", {
+					username: "System",
+					text: `'${payload.text}' is close!`,
+					isSystemMsg: true,
+				});
+				return; // Stop here so it doesn't show in public chat
+			}
 		}
 
-		// Standard chat message
 		io.to(payload.roomId).emit("receive_message", {
 			username,
 			text: payload.text,
@@ -224,7 +287,6 @@ io.on("connection", (socket) => {
 			room.currentTurn.drawerId !== socket.id
 		)
 			return;
-
 		if (room.timerInterval) clearInterval(room.timerInterval);
 		startDrawingPhase(roomId, word);
 	});
@@ -234,7 +296,6 @@ io.on("connection", (socket) => {
 		if (!room) return;
 
 		if (room.round > room.settings.maxRounds) {
-			// Sort players into a podium based on final scores
 			const podium = [...room.players]
 				.map((p) => ({
 					id: p.id,
@@ -256,7 +317,6 @@ io.on("connection", (socket) => {
 			round: room.round,
 			maxRounds: room.settings.maxRounds,
 		});
-
 		setTimeout(() => startTurn(roomId), 3000);
 	}
 
@@ -269,15 +329,18 @@ io.on("connection", (socket) => {
 		room.status = "CHOOSING";
 		const currentDrawer = room.players[room.turnIndex];
 
-		// --- NEW: Reset the Turn State securely! ---
-		// --- NEW: Reset the Turn State securely! ---
 		room.currentTurn = {
 			drawerId: currentDrawer.id,
 			word: "",
 			correctGuessers: [],
 			timeLeft: 15,
-			turnScores: {}, // Tracks points earned specifically in this turn
-			firstGuessTimeLeft: null, // Tracks how fast the first person guessed
+			turnScores: {},
+			firstGuessTimeLeft: null,
+			// Setup hint states
+			hintString: [],
+			hintTimes: [],
+			hintsGiven: 0,
+			canvasHistory: []
 		};
 
 		io.to(roomId).emit("turn_start", {
@@ -291,7 +354,6 @@ io.on("connection", (socket) => {
 		let poolOfWords = availableWords
 			.sort(() => 0.5 - Math.random())
 			.slice(0, room.settings.wordCount);
-
 		if (poolOfWords.length < room.settings.wordCount) {
 			poolOfWords = WORD_LIST.sort(() => 0.5 - Math.random()).slice(
 				0,
@@ -310,7 +372,7 @@ io.on("connection", (socket) => {
 
 			if (room.currentTurn.timeLeft <= 0) {
 				clearInterval(room.timerInterval);
-				startDrawingPhase(roomId, poolOfWords[0]); // Auto-pick
+				startDrawingPhase(roomId, poolOfWords[0]);
 			}
 		}, 1000);
 	}
@@ -321,29 +383,51 @@ io.on("connection", (socket) => {
 
 		room.status = "DRAWING";
 		room.currentTurn.word = chosenWord;
-		room.currentTurn.timeLeft = room.settings.drawTime; // Use host setting!
+		room.currentTurn.timeLeft = room.settings.drawTime;
 		room.usedWords.push(chosenWord);
+
+		// Prep hint pacing
+		room.currentTurn.hintString = Array(chosenWord.length).fill("_");
+
+		// Calculate the specific seconds when hints should fire
+		const totalHints = Math.min(room.settings.hints, chosenWord.length - 2); // Ensure we don't reveal too much
+		for (let i = 1; i <= totalHints; i++) {
+			// Evenly space out hints: e.g., if 90s and 2 hints -> hints at 60s and 30s
+			room.currentTurn.hintTimes.push(
+				Math.floor(room.settings.drawTime * (1 - i / (totalHints + 1))),
+			);
+		}
 
 		io.to(roomId).emit("game_started", {
 			drawerId: room.currentTurn.drawerId,
 			wordLength: chosenWord.length,
+			initialHint: room.currentTurn.hintString, // Send empty blanks
 		});
 
-		// 2. Tell ONLY THE DRAWER what the actual word is
 		io.to(room.currentTurn.drawerId).emit("your_word", {
 			word: chosenWord,
 		});
-
 		io.to(roomId).emit("clear_canvas");
 
 		room.timerInterval = setInterval(() => {
 			room.currentTurn.timeLeft--;
+			const turn = room.currentTurn;
+
+			// CHECK IF HINT SHOULD FIRE THIS SECOND
+			if (turn.hintTimes.includes(turn.timeLeft)) {
+				generateSmartHint(turn);
+				// Send updated hint string to frontend
+				io.to(roomId).emit("word_hint", {
+					hintString: turn.hintString,
+				});
+			}
+
 			io.to(roomId).emit("timer_update", {
 				phase: "drawing",
-				time: room.currentTurn.timeLeft,
+				time: turn.timeLeft,
 			});
 
-			if (room.currentTurn.timeLeft <= 0) {
+			if (turn.timeLeft <= 0) {
 				clearInterval(room.timerInterval);
 				endTurn(roomId, "Time's up!");
 			}
@@ -359,30 +443,31 @@ io.on("connection", (socket) => {
 
 		const turn = room.currentTurn;
 
-		// --- CALCULATE DRAWER POINTS ---
-		// Drawer only gets points if at least one person guessed correctly
 		if (turn.correctGuessers.length > 0 && turn.drawerId) {
 			let baseDrawerPoints = turn.correctGuessers.length * 20;
-			// Bonus based on how fast the FIRST person guessed it
 			let speedBonus = Math.floor(
 				(turn.firstGuessTimeLeft / room.settings.drawTime) * 50,
 			);
-
 			let totalDrawerPoints = baseDrawerPoints + speedBonus;
-
 			turn.turnScores[turn.drawerId] = totalDrawerPoints;
 			room.scores[turn.drawerId] =
 				(room.scores[turn.drawerId] || 0) + totalDrawerPoints;
 		}
 
+		// --- NEW: Explicitly assign 0 to players who didn't guess ---
+		room.players.forEach((p) => {
+			if (turn.turnScores[p.id] === undefined) {
+				turn.turnScores[p.id] = 0;
+			}
+		});
+
 		io.to(roomId).emit("turn_end", {
 			reason: reason,
 			word: turn.word,
-			scores: room.scores, // The total scores (for the left sidebar)
-			turnScores: turn.turnScores, // The points earned THIS round (for the popup)
+			scores: room.scores,
+			turnScores: turn.turnScores,
 		});
 
-		// Advance to next person
 		room.turnIndex++;
 		setTimeout(() => startTurn(roomId), 5000);
 	}
@@ -402,52 +487,81 @@ io.on("connection", (socket) => {
 	}
 
 	socket.on("disconnect", () => {
-		for (const roomId in rooms) {
-			const room = rooms[roomId];
-			const playerIndex = room.players.findIndex(
-				(p) => p.id === socket.id,
-			);
+        console.log("Socket disconnected:", socket.id);
 
-			if (playerIndex !== -1) {
-				const playerWhoLeft = room.players[playerIndex];
-				room.players.splice(playerIndex, 1);
+        // 1. Search all active rooms to find where this socket belonged
+        for (const roomId in rooms) {
+            const room = rooms[roomId];
+            const playerIndex = room.players.findIndex((p) => p.id === socket.id);
 
-				if (room.players.length === 0) {
-					if (room.timerInterval) clearInterval(room.timerInterval);
-					delete rooms[roomId];
-				} else {
-					// Update host privileges if host left
-					if (playerIndex === 0) {
-						io.to(roomId).emit("receive_message", {
-							username: "System",
-							text: `${room.players[0].username} is the new host.`,
-							isSystemMsg: true,
-						});
-					}
+            // If the player is found in this room
+            if (playerIndex !== -1) {
+                const playerWhoLeft = room.players[playerIndex];
 
-					io.to(roomId).emit("player_left", {
-						playerArr: room.players,
-					});
-					io.to(roomId).emit("receive_message", {
-						username: "System",
-						text: `${playerWhoLeft.username} has disconnected.`,
-						isSystemMsg: true,
-					});
+                // 2. Remove them from the room's player array
+                room.players.splice(playerIndex, 1);
 
-					// If the drawer quit mid-turn, kill the turn immediately
-					if (
-						room.currentTurn.drawerId === socket.id &&
-						room.status === "DRAWING"
-					) {
-						endTurn(roomId, "The drawer left!");
-					}
-				}
-				break;
-			}
-		}
-	});
+                // 3. Handle Empty Room
+                if (room.players.length === 0) {
+                    // Stop the timer to prevent memory leaks!
+                    if (room.timerInterval) clearInterval(room.timerInterval);
+                    // Delete the room from server memory
+                    delete rooms[roomId];
+                    console.log(`Room ${roomId} deleted (empty).`);
+                } 
+                // 4. Handle Remaining Players
+                else {
+                    // Update the UI for everyone else
+                    io.to(roomId).emit("player_left", { playerArr: room.players });
+                    io.to(roomId).emit("receive_message", {
+                        username: "System",
+                        text: `${playerWhoLeft.username} has disconnected.`,
+                        isSystemMsg: true,
+                    });
+
+                    // 5. Host Migration
+                    // If the person who left was index 0 (the host), the array shifted up.
+                    // The new index 0 is automatically the new host.
+                    if (playerIndex === 0) {
+                        io.to(roomId).emit("receive_message", {
+                            username: "System",
+                            text: `${room.players[0].username} is the new host.`,
+                            isSystemMsg: true,
+                        });
+                    }
+
+                    // 6. Game State Rescue (Drawer Rage-Quit)
+                    // If the game is active and the person who left was the one drawing (or choosing)
+                    if (
+                        (room.status === "DRAWING" || room.status === "CHOOSING") && 
+                        room.currentTurn.drawerId === socket.id
+                    ) {
+                        // Kill the turn immediately so the room doesn't wait 90 seconds in silence
+                        endTurn(roomId, "The drawer left!");
+                    }
+                    
+                    // Optional Game State Rescue (Not enough players)
+                    // If a game is running but now only 1 person is left, end the game.
+                    if (room.status !== "LOBBY" && room.players.length < 2) {
+                        if (room.timerInterval) clearInterval(room.timerInterval);
+                        room.status = "LOBBY";
+                        io.to(roomId).emit("receive_message", {
+                            username: "System",
+                            text: "Not enough players to continue. Game ended.",
+                            isSystemMsg: true,
+                        });
+                        io.to(roomId).emit("game_over", { 
+                            podium: [], // Nobody wins if everyone leaves
+                            scores: room.scores 
+                        });
+                    }
+                }
+                
+                // Break the loop since a socket can only be in one game room
+                break; 
+            }
+        }
+    });
 });
 
-httpserver.listen(5000, () => {
-	console.log("Server is listening on port 5000");
-});
+httpserver.listen(5000, () => console.log("Server is listening on port 5000"));
