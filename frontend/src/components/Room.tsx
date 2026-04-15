@@ -197,9 +197,6 @@ export default function Room() {
             setCurrentDrawerId(null);
             setCurrentWord("");
             
-            setTimeout(() => {
-                setGamePhase("LOBBY");
-            }, 10000);
         });
 
         return () => {
@@ -389,6 +386,8 @@ export default function Room() {
                                     <h2 className="text-5xl font-black text-gray-800 mb-10">🏆 Final Podium 🏆</h2>
                                     
                                     <div className="flex justify-center items-end gap-6 mb-10 h-48">
+                                        {/* ... (Keep all your existing podium[0], podium[1], podium[2] code exactly the same here) ... */}
+                                        
                                         {podium[1] && (
                                             <div className="flex flex-col items-center animate-bounce delay-100">
                                                 <span className="text-xl font-bold text-gray-600 truncate max-w-[120px]">{podium[1].username}</span>
@@ -413,7 +412,14 @@ export default function Room() {
                                             </div>
                                         )}
                                     </div>
-                                    <p className="text-gray-400 font-medium animate-pulse">Returning to Lobby...</p>
+
+                                    {/* ✅ NEW CLOSE BUTTON */}
+                                    <button 
+                                        onClick={() => setGamePhase("LOBBY")}
+                                        className="mt-4 px-8 py-3 bg-indigo-600 hover:bg-indigo-700 text-white font-bold rounded-xl shadow-md transition-colors text-lg"
+                                    >
+                                        Back to Lobby
+                                    </button>
                                 </div>
                             )}
                         </div>
