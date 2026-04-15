@@ -4,10 +4,12 @@ import { Server } from "socket.io";
 
 const app = express();
 const httpserver = http.createServer(app);
+const FRONTEND_URL = process.env.FRONTEND_URL || "http://localhost:5173";
+
 const io = new Server(httpserver, {
-	cors: {
-		origin: ["http://localhost:5173"],
-	},
+    cors: {
+        origin: [FRONTEND_URL, "http://localhost:5173"], // Allows both prod and local
+    },
 });
 
 const WORD_LIST = [
@@ -564,4 +566,5 @@ io.on("connection", (socket) => {
     });
 });
 
-httpserver.listen(5000, () => console.log("Server is listening on port 5000"));
+const PORT = process.env.PORT || 5000;
+httpserver.listen(PORT, () => console.log(`Server is listening on port ${PORT}`));
